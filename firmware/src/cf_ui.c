@@ -1429,14 +1429,12 @@ static void cf_ui_pump(void)
     cu.keys = cu.pkeys | cu.xkeys;
 #if CF_MIDI_KEYS_FAST
     {
-        uint32_t n;
-        int slow_held = 0;
+        uint32_t n, slow_mask = 0u;
         for (n = 0; n < 128u; n++)
-            if (cu.xnote[n] && !cf_ui_fast_note[n]) {
-                slow_held = 1;
-                break;
-            }
-        cf_fast_keys_allowed = (uint8_t)(cu.scr == SCR_HOME && !slow_held &&
+            if (cu.xnote[n] && !cf_ui_fast_note[n] && cu.xnote[n] != 0xFFu)
+                slow_mask |= 1u << (cu.xnote[n] - 1u);
+        cf_fast_slow_keys = slow_mask;
+        cf_fast_keys_allowed = (uint8_t)(cu.scr == SCR_HOME && !slow_mask &&
                                          cf_xq_w == cf_xq_r && cs.notes_in == CF_NI_KEYS);
     }
 #endif
