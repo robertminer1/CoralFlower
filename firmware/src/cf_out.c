@@ -460,7 +460,6 @@ static uint8_t cf_fast_count[27];
 static volatile uint32_t cf_fast_mask;
 static volatile uint32_t cf_fast_physical_keys; /* UI's last applied physical-key mask */
 static volatile uint32_t cf_fast_slow_keys;     /* UI's non-fast MIDI-held key mask */
-static volatile uint32_t cf_fast_note_ons;       /* confirmation the low-latency path actually ran */
 #endif
 static int cf_xq_put(uint32_t note, uint32_t down, uint32_t ms, uint32_t fast)
 {
@@ -510,7 +509,6 @@ static void cf_fast_key_event(uint32_t note, int down)
 {
     uint32_t k, mask;
     if (down) {
-        cf_fast_note_ons++;
         k = cf_fast_key_index(note);
         cf_fast_note[note] = (uint8_t)(k + 1u);
         if (cf_fast_count[k]++ != 0u)
