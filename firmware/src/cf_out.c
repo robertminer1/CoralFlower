@@ -459,6 +459,7 @@ static uint8_t cf_fast_note[128];
 static uint8_t cf_fast_count[27];
 static volatile uint32_t cf_fast_mask;
 static volatile uint32_t cf_fast_physical_keys; /* UI's last applied physical-key mask */
+static volatile uint32_t cf_fast_slow_keys;     /* UI's non-fast MIDI-held key mask */
 #endif
 static int cf_xq_put(uint32_t note, uint32_t down, uint32_t ms, uint32_t fast)
 {
@@ -497,7 +498,7 @@ static void cf_fast_release_all(void)
             cf_fast_note[n] = 0;
             if (cf_fast_count[k] && --cf_fast_count[k] == 0u) {
                 cf_fast_mask &= ~(1u << k);
-                if (!(fm1_in.notes & (1u << k)))
+                if (!((fm1_in.notes | cf_fast_slow_keys) & (1u << k)))
                     cfp_key((int)k, 0);
             }
         }
@@ -525,7 +526,7 @@ static void cf_fast_key_event(uint32_t note, int down)
         if (cf_fast_count[k] && --cf_fast_count[k] == 0u) {
             mask = 1u << k;
             cf_fast_mask &= ~mask;
-            if (!(fm1_in.notes & mask))
+            if (!((fm1_in.notes | cf_fast_slow_keys) & mask))
                 cfp_key((int)k, 0);
         }
     }
@@ -599,8 +600,12 @@ static void cf_midi_in(void)
                     continue;
 #if CF_MIDI_KEYS_FAST
                 if (fast) {
-                    if (down && !cf_fast_note[d1])
+                    if (down && !cf_fast_note[d1]) {
+                        uint32_t age = fm1_ms - midi_in_ms[at];
+                        sqp.rage = age <= 250u ? age : 0u;
+                        sqp_pre.key_ms = cf_now_ms - sqp.rage;
                         cf_fast_key_event(d1, 1);
+                    }
                     else if (!down)
                         cf_fast_key_event(d1, 0);
                 }
