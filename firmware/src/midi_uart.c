@@ -30,6 +30,11 @@ static volatile uint32_t um_lat_notes, um_lat_completed, um_lat_pending;
 static volatile uint32_t um_lat_queue_us, um_lat_output_us;
 static volatile uint32_t um_lat_queue_max_us, um_lat_output_max_us;
 static volatile uint32_t um_lat_note;
+/* Keys-mode pipeline: 1 = waiting for UI, 2 = UI posted simulated key,
+ * 3 = audio ISR applied it and is waiting for output. Isolated notes only. */
+static volatile uint32_t um_lat_key_stage, um_lat_key_note, um_lat_key_index;
+static volatile uint32_t um_lat_ui_us, um_lat_ui_max_us;
+static volatile uint32_t um_lat_apply_us, um_lat_apply_max_us;
 #endif
 
 static void uart_midi_init(void)                   /* before timer5_start(): PORTH RMW */
