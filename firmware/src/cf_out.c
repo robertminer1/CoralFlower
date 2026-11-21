@@ -509,8 +509,21 @@ static void cf_midi_in(void)
         if (cfp_cfg.notes_in != CF_NI_DIRECT && (status & 0xE0u) == 0x80u) {   /* a note on or off: IN CH's, or any
                                                   * channel with IN CH All (0.5.1, GitHub #2: a Digitakt's other tracks
                                                   * played chords) */
-            if (!cfp_cfg.in_ch || (status & 0x0Fu) == cfp_cfg.in_ch - 1u)
+            if (!cfp_cfg.in_ch || (status & 0x0Fu) == cfp_cfg.in_ch - 1u) {
                 cf_xq_put(d1, (status & 0xF0u) == 0x90u && d2, midi_in_ms[at]);
+#if CF_MIDI_LAT_DIAG
+                if (cfp_cfg.notes_in == CF_NI_KEYS &&
+                    (status & 0xF0u) == 0x90u && d2 &&
+                    um_lat_seq[at] == mi_r && !um_lat_key_stage &&
+                    !um_lat_pending) {
+                    um_lat_rx_tick = um_lat_tick[at];
+                    um_lat_key_note = d1;
+                    um_lat_note = d1;
+                    um_lat_notes++;
+                    um_lat_key_stage = 1u;
+                }
+#endif
+            }
             continue;
         }
         if (status >= 0x80u && status < 0xF0u) {
@@ -545,6 +558,21 @@ static void cf_apply(const cf_ev_in_t *e)
 {
     switch (e->op) {
     case CFE_KEY:
+#if CF_MIDI_LAT_DIAG
+        if (e->v && um_lat_key_stage == 2u && e->a == um_lat_key_index) {
+            uint32_t tick = fm1_ticks();
+            uint32_t us = (uint32_t)(tick - um_lat_rx_tick) / FM1_TICKS_PER_US;
+            um_lat_dispatch_tick = tick;
+            um_lat_queue_us = us;
+            if (us > um_lat_queue_max_us)
+                um_lat_queue_max_us = us;
+            um_lat_apply_us = us;
+            if (us > um_lat_apply_max_us)
+                um_lat_apply_max_us = us;
+            um_lat_pending = 1u;
+            um_lat_key_stage = 3u;
+        }
+#endif
         if (e->v) {
             sqp.rage = e->b;                     /* (its age, ms: a take puts it back where it was played) */
             sqp_pre.key_ms = cf_now_ms - e->b;
