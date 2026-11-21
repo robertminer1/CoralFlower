@@ -485,6 +485,23 @@ static uint32_t cf_fast_key_index(uint32_t note)
     return k - 53u;
 }
 /* Only audio ISR calls this. No main-loop state is modified here. */
+static uint8_t cf_fast_input_ch;
+static void cf_fast_release_all(void)
+{
+    uint32_t n;
+    /* A mode/channel change can invalidate outstanding note-offs. Release
+     * the fast virtual keys on the audio ISR side, without touching UI data. */
+    for (n = 0; n < 128u; n++)
+        if (cf_fast_note[n]) {
+            uint32_t k = cf_fast_note[n] - 1u;
+            cf_fast_note[n] = 0;
+            if (cf_fast_count[k] && --cf_fast_count[k] == 0u) {
+                cf_fast_mask &= ~(1u << k);
+                if (!(fm1_in.notes & (1u << k)))
+                    cfp_key((int)k, 0);
+            }
+        }
+}
 static void cf_fast_key_event(uint32_t note, int down)
 {
     uint32_t k, mask;
@@ -533,6 +550,12 @@ static void cf_midi_in(void)
                 cr_mrelease(p, n);
     }
     cfx_direct = cfp_cfg.notes_in == CF_NI_DIRECT;
+#if CF_MIDI_KEYS_FAST
+    if (cfp_cfg.notes_in != CF_NI_KEYS || cf_fast_input_ch != cfp_cfg.in_ch) {
+        cf_fast_release_all();
+        cf_fast_input_ch = cfp_cfg.in_ch;
+    }
+#endif
     if (midi_in_overflow)
         return;
     while (mi_r != w) {
@@ -600,6 +623,7 @@ static void cf_midi_in(void)
                             um_lat_apply_max_us = us;
                         if (us > um_lat_queue_max_us)
                             um_lat_queue_max_us = us;
+                        um_lat_ui_us = 0u; /* bypassed; UI updates later */
                         um_lat_pending = 1u;
                         um_lat_key_stage = 3u;
                     } else {
