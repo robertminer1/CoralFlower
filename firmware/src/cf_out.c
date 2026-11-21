@@ -618,32 +618,6 @@ static void cf_midi_in(void)
                         cf_fast_key_event(d1, 0);
                 }
 #endif
-#if CF_MIDI_LAT_DIAG
-                if (cfp_cfg.notes_in == CF_NI_KEYS &&
-                    (status & 0xF0u) == 0x90u && d2 &&
-                    um_lat_seq[at] == mi_r && !um_lat_key_stage &&
-                    !um_lat_pending) {
-                    um_lat_rx_tick = um_lat_tick[at];
-                    um_lat_key_note = d1;
-                    um_lat_note = d1;
-                    um_lat_notes++;
-                    if (fast) {
-                        uint32_t tick = fm1_ticks();
-                        uint32_t us = (uint32_t)(tick - um_lat_rx_tick) / FM1_TICKS_PER_US;
-                        um_lat_dispatch_tick = tick;
-                        um_lat_apply_us = um_lat_queue_us = us;
-                        if (us > um_lat_apply_max_us)
-                            um_lat_apply_max_us = us;
-                        if (us > um_lat_queue_max_us)
-                            um_lat_queue_max_us = us;
-                        um_lat_ui_us = 0u; /* bypassed; UI updates later */
-                        um_lat_pending = 1u;
-                        um_lat_key_stage = 3u;
-                    } else {
-                        um_lat_key_stage = 1u;
-                    }
-                }
-#endif
             }
             continue;
         }
@@ -652,20 +626,6 @@ static void cf_midi_in(void)
             int i, n = crm_map(status, d1, d2, en, ch, a);
             for (i = 0; i < n; i++)
                 if (a[i].kind == CRM_FORWARD) {
-#if CF_MIDI_LAT_DIAG
-                    if ((status & 0xF0u) == 0x90u && d2 && um_lat_seq[at] == mi_r) {
-                        uint32_t tick = fm1_ticks();
-                        uint32_t us = (uint32_t)(tick - um_lat_tick[at]) / FM1_TICKS_PER_US;
-                        um_lat_rx_tick = um_lat_tick[at];
-                        um_lat_dispatch_tick = tick;
-                        um_lat_queue_us = us;
-                        if (us > um_lat_queue_max_us)
-                            um_lat_queue_max_us = us;
-                        um_lat_note = d1;
-                        um_lat_notes++;
-                        um_lat_pending = 1u;
-                    }
-#endif
                     midi_event(status & 0xF0u, a[i].part, d1, d2);
                 }
         }
@@ -679,21 +639,6 @@ static void cf_apply(const cf_ev_in_t *e)
 {
     switch (e->op) {
     case CFE_KEY:
-#if CF_MIDI_LAT_DIAG
-        if (e->v && um_lat_key_stage == 2u && e->a == um_lat_key_index) {
-            uint32_t tick = fm1_ticks();
-            uint32_t us = (uint32_t)(tick - um_lat_rx_tick) / FM1_TICKS_PER_US;
-            um_lat_dispatch_tick = tick;
-            um_lat_queue_us = us;
-            if (us > um_lat_queue_max_us)
-                um_lat_queue_max_us = us;
-            um_lat_apply_us = us;
-            if (us > um_lat_apply_max_us)
-                um_lat_apply_max_us = us;
-            um_lat_pending = 1u;
-            um_lat_key_stage = 3u;
-        }
-#endif
         if (e->v) {
             sqp.rage = e->b;                     /* (its age, ms: a take puts it back where it was played) */
             sqp_pre.key_ms = cf_now_ms - e->b;
