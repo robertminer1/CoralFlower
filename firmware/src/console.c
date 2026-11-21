@@ -429,6 +429,11 @@ static void con_lat(void)
     con_kv("received_notes", (int32_t)um_lat_notes);
     con_kv("output_matches", (int32_t)um_lat_completed);
     con_kv("pending", (int32_t)um_lat_pending);
+#if CF_MIDI_KEYS_FAST
+    con_kv("fast_enabled", (int32_t)cf_fast_keys_allowed);
+    con_kv("fast_note_ons", (int32_t)cf_fast_note_ons);
+    con_kx("fast_held_mask", cf_fast_mask);
+#endif
     con_kv("keys_stage", (int32_t)um_lat_key_stage);
     con_kv("rx_to_ui_us", (int32_t)um_lat_ui_us);
     con_kv("rx_to_ui_max_us", (int32_t)um_lat_ui_max_us);
