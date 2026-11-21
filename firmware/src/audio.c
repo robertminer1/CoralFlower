@@ -110,13 +110,23 @@ static void audio_block(int32_t *out, uint32_t n)       /* mix (fx.c), then Q15 
                     um_lat_output_max_us = us;
                 um_lat_completed++;
                 um_lat_pending = 0;
+                if (um_lat_key_stage == 3u)
+                    um_lat_key_stage = 0u;
                 break;
             }
         }
         if (um_lat_pending &&
-            (uint32_t)(fm1_ticks() - um_lat_dispatch_tick) > 200000u * FM1_TICKS_PER_US)
-            um_lat_pending = 0; /* silent preset / muted track: expire after 200 ms */
+            (uint32_t)(fm1_ticks() - um_lat_dispatch_tick) > 200000u * FM1_TICKS_PER_US) {
+            um_lat_pending = 0; /* silent preset / muted track */
+            um_lat_key_stage = 0u;
+        }
     }
+    /* Also expire a Keys-mode note which never reached the UI or audio
+     * event queue, e.g. a held/duplicate key, an edit shortcut, or dropped
+     * queue entry. Do not mistake its next note for the previous one. */
+    if (um_lat_key_stage && !um_lat_pending &&
+        (uint32_t)(fm1_ticks() - um_lat_rx_tick) > 200000u * FM1_TICKS_PER_US)
+        um_lat_key_stage = 0u;
 #endif
     if (fx_usb_fixed)                                   /* Options > USB Level = Fixed: USB took the full level, the */
         usb_fixed_dac(out, n);                          /* DAC (speaker, headphones) gets MASTER's (fx.c) */
