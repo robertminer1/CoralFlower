@@ -447,21 +447,72 @@ static void cf_click_mix(int32_t *out, uint32_t n)
  * roots: cf_ui.c cf_ui_pump). One producer (the audio ISR), one consumer (the main loop); a full queue drops a note-on
  * (its note-off then finds nothing down) */
 #define CF_XQ 64u                                /* a power of two */
-static uint16_t cf_xq[CF_XQ];                    /* note | down << 7 */
+static uint16_t cf_xq[CF_XQ];                    /* note | down << 7 | fast << 8 */
 static uint32_t cf_xq_ms[CF_XQ];                 /* when it came (fm1_ms) */
 static volatile uint32_t cf_xq_w, cf_xq_r;
-static void cf_xq_put(uint32_t note, uint32_t down, uint32_t ms)
+#if CF_MIDI_KEYS_FAST
+/* ISR-owned MIDI virtual-key map. UI owns key lights/menus, but does not post
+ * an audio key event a second time for entries marked fast in cf_xq.
+ * Enable only on HOME with no previously queued slow virtual keys. */
+static volatile uint8_t cf_fast_keys_allowed;
+static uint8_t cf_fast_note[128];
+static uint8_t cf_fast_count[27];
+static volatile uint32_t cf_fast_mask;
+#endif
+static int cf_xq_put(uint32_t note, uint32_t down, uint32_t ms, uint32_t fast)
 {
     uint32_t w = cf_xq_w;
     if (w - cf_xq_r >= CF_XQ && down)
-        return;
+        return 0;
     if (w - cf_xq_r >= CF_XQ)
         cf_xq_r++;                               /* (a note-off never lost: the oldest goes) */
-    cf_xq[w % CF_XQ] = (uint16_t)(note | (down ? 0x80u : 0u));
+    cf_xq[w % CF_XQ] = (uint16_t)(note | (down ? 0x80u : 0u) | (fast ? 0x100u : 0u));
     cf_xq_ms[w % CF_XQ] = ms;
     RING_PUBLISH();
     cf_xq_w = w + 1u;
+    return 1;
 }
+
+#if CF_MIDI_KEYS_FAST
+static uint32_t cf_fast_key_index(uint32_t note)
+{
+    uint32_t k;
+    for (k = note; k < 53u; k += 12u)
+        ;
+    while (k > 79u)
+        k -= 12u;
+    return k - 53u;
+}
+/* Only audio ISR calls this. No main-loop state is modified here. */
+static void cf_fast_key_event(uint32_t note, int down)
+{
+    uint32_t k, mask;
+    if (down) {
+        k = cf_fast_key_index(note);
+        cf_fast_note[note] = (uint8_t)(k + 1u);
+        if (cf_fast_count[k]++ != 0u)
+            return;
+        mask = 1u << k;
+        cf_fast_mask |= mask;
+        /* If the physical key has already been processed, do not retrigger.
+         * The fast mask prevents the UI from posting a duplicate later. */
+        if (!(cu.pkeys & mask))
+            cfp_key((int)k, 1);
+    } else {
+        uint32_t v = cf_fast_note[note];
+        if (!v)
+            return;
+        k = v - 1u;
+        cf_fast_note[note] = 0;
+        if (cf_fast_count[k] && --cf_fast_count[k] == 0u) {
+            mask = 1u << k;
+            cf_fast_mask &= ~mask;
+            if (!(fm1_in.notes & mask))
+                cfp_key((int)k, 0);
+        }
+    }
+}
+#endif
 
 /* usb.c's midi_in_q (USB and TRS) is drained here: notes on the chord / bass channels play the parts directly
  * (cr_midi.c crm_map, ChoralRoot's), with the pedal, bend and controllers (midi_event above) */
@@ -510,7 +561,26 @@ static void cf_midi_in(void)
                                                   * channel with IN CH All (0.5.1, GitHub #2: a Digitakt's other tracks
                                                   * played chords) */
             if (!cfp_cfg.in_ch || (status & 0x0Fu) == cfp_cfg.in_ch - 1u) {
-                cf_xq_put(d1, (status & 0xF0u) == 0x90u && d2, midi_in_ms[at]);
+                int down = (status & 0xF0u) == 0x90u && d2;
+                int fast = 0;
+#if CF_MIDI_KEYS_FAST
+                if (cfp_cfg.notes_in == CF_NI_KEYS) {
+                    if (!down && cf_fast_note[d1])
+                        fast = 1;
+                    else if (down && !cf_fast_note[d1] && cf_fast_keys_allowed)
+                        fast = 1;
+                }
+#endif
+                if (!cf_xq_put(d1, down, midi_in_ms[at], (uint32_t)fast))
+                    continue;
+#if CF_MIDI_KEYS_FAST
+                if (fast) {
+                    if (down && !cf_fast_note[d1])
+                        cf_fast_key_event(d1, 1);
+                    else if (!down)
+                        cf_fast_key_event(d1, 0);
+                }
+#endif
 #if CF_MIDI_LAT_DIAG
                 if (cfp_cfg.notes_in == CF_NI_KEYS &&
                     (status & 0xF0u) == 0x90u && d2 &&
@@ -520,7 +590,20 @@ static void cf_midi_in(void)
                     um_lat_key_note = d1;
                     um_lat_note = d1;
                     um_lat_notes++;
-                    um_lat_key_stage = 1u;
+                    if (fast) {
+                        uint32_t tick = fm1_ticks();
+                        uint32_t us = (uint32_t)(tick - um_lat_rx_tick) / FM1_TICKS_PER_US;
+                        um_lat_dispatch_tick = tick;
+                        um_lat_apply_us = um_lat_queue_us = us;
+                        if (us > um_lat_apply_max_us)
+                            um_lat_apply_max_us = us;
+                        if (us > um_lat_queue_max_us)
+                            um_lat_queue_max_us = us;
+                        um_lat_pending = 1u;
+                        um_lat_key_stage = 3u;
+                    } else {
+                        um_lat_key_stage = 1u;
+                    }
                 }
 #endif
             }
