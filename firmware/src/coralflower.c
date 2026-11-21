@@ -93,6 +93,7 @@ static void cf_boot_note(void);            /* (cf_fx.c) */
 
 #define CF_UNIT 1                /* (main.c: CoralFlower's calibration and update hooks) */
 #define CF_MIDI_LAT_DIAG FELUCCA_UART /* experimental TRS Note On -> DMA output timing (CDC 'lat') */
+#define CF_MIDI_KEYS_FAST 1      /* experimental HOME-only audio-ISR key presses; UI remains display owner */
 
 #if defined(__APPLE__)            /* the host syntax check only: Mach-O has no ELF sections (.noinit, .pool) */
 #define __attribute__(x)
