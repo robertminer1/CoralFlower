@@ -1343,8 +1343,19 @@ static void cf_xq_drain(void)
             cu.xnote[n] = (uint8_t)(k + 1u);
             if (cu.xcnt[k]++ == 0u) {
                 cu.xkeys |= 1u << k;
-                if (!((cu.pkeys >> k) & 1u))
+                if (!((cu.pkeys >> k) & 1u)) {
+#if CF_MIDI_LAT_DIAG
+                    if (um_lat_key_stage == 1u && um_lat_key_note == n) {
+                        uint32_t us = (uint32_t)(fm1_ticks() - um_lat_rx_tick) / FM1_TICKS_PER_US;
+                        um_lat_ui_us = us;
+                        if (us > um_lat_ui_max_us)
+                            um_lat_ui_max_us = us;
+                        um_lat_key_index = k;
+                        um_lat_key_stage = 2u;
+                    }
+#endif
                     ui_note_key_aged((int)k, 1, age <= 250u ? (int)age : 0);
+                }
             }
         } else {
             cf_xnote_up(n);
