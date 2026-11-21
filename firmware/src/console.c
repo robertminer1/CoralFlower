@@ -420,14 +420,35 @@ static void con_params(void)
     }
 }
 
+#if CF_MIDI_LAT_DIAG
+/* Read between short, isolated notes: output match can include FX tails. */
+static void con_lat(void)
+{
+    con_puts("TRS MIDI Direct-mode latency (-42 dBFS output threshold)\r\n");
+    con_kv("note", (int32_t)um_lat_note);
+    con_kv("received_notes", (int32_t)um_lat_notes);
+    con_kv("output_matches", (int32_t)um_lat_completed);
+    con_kv("pending", (int32_t)um_lat_pending);
+    con_kv("rx_to_dispatch_us", (int32_t)um_lat_queue_us);
+    con_kv("rx_to_dispatch_max_us", (int32_t)um_lat_queue_max_us);
+    con_kv("rx_to_dma_us", (int32_t)um_lat_output_us);
+    con_kv("rx_to_dma_max_us", (int32_t)um_lat_output_max_us);
+    con_puts("Output match includes other notes/FX tails: use isolated dry notes.\r\n");
+}
+#endif
+
 static void con_exec(const char *p)
 {
     if (con_word(&p, "help") || con_word(&p, "?"))
-        con_puts("status  cpu  dbg  boot  inp  crash  params  memr ADDR [LEN]  flr OFF [LEN]  uboot yes\r\n");
+        con_puts("status  cpu  dbg  boot  inp  crash  params  lat  memr ADDR [LEN]  flr OFF [LEN]  uboot yes\r\n");
     else if (con_word(&p, "cpu"))
         con_cpu();
     else if (con_word(&p, "status"))
         con_status();
+#if CF_MIDI_LAT_DIAG
+    else if (con_word(&p, "lat"))
+        con_lat();
+#endif
     else if (con_word(&p, "dbg"))
         con_dbg();
     else if (con_word(&p, "boot"))
