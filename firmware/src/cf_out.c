@@ -458,6 +458,7 @@ static volatile uint8_t cf_fast_keys_allowed;
 static uint8_t cf_fast_note[128];
 static uint8_t cf_fast_count[27];
 static volatile uint32_t cf_fast_mask;
+static volatile uint32_t cf_fast_physical_keys; /* UI's last applied physical-key mask */
 #endif
 static int cf_xq_put(uint32_t note, uint32_t down, uint32_t ms, uint32_t fast)
 {
@@ -496,7 +497,7 @@ static void cf_fast_key_event(uint32_t note, int down)
         cf_fast_mask |= mask;
         /* If the physical key has already been processed, do not retrigger.
          * The fast mask prevents the UI from posting a duplicate later. */
-        if (!(cu.pkeys & mask))
+        if (!(cf_fast_physical_keys & mask))
             cfp_key((int)k, 1);
     } else {
         uint32_t v = cf_fast_note[note];
