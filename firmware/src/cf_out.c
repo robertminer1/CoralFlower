@@ -492,6 +492,8 @@ static void cf_fast_release_all(void)
     uint32_t n;
     /* A mode/channel change can invalidate outstanding note-offs. Release
      * the fast virtual keys on the audio ISR side, without touching UI data. */
+    if (!cf_fast_mask)
+        return;
     for (n = 0; n < 128u; n++)
         if (cf_fast_note[n]) {
             uint32_t k = cf_fast_note[n] - 1u;
@@ -557,8 +559,12 @@ static void cf_midi_in(void)
         cf_fast_input_ch = cfp_cfg.in_ch;
     }
 #endif
-    if (midi_in_overflow)
+    if (midi_in_overflow) {
+#if CF_MIDI_KEYS_FAST
+        cf_fast_release_all();
+#endif
         return;
+    }
     while (mi_r != w) {
         uint32_t at = mi_r % MQ, pkt = midi_in_q[at], status = (pkt >> 8) & 0xFFu;
         uint32_t d1 = (pkt >> 16) & 0x7Fu, d2 = (pkt >> 24) & 0x7Fu;
