@@ -19,6 +19,19 @@ static struct {
     uint8_t st, need, got, d0, sysex;
 } um;
 
+#if CF_MIDI_LAT_DIAG
+/* TIMER5 writes the timestamp after publishing a TRS packet. The audio ISR
+ * sees it after the higher-priority TIMER5 handler returns. Sequence tags
+ * distinguish UART notes from USB packets sharing midi_in_q. */
+static volatile uint32_t um_lat_seq[MQ], um_lat_tick[MQ];
+static volatile uint32_t um_lat_rx_tick, um_lat_dispatch_tick;
+static volatile uint32_t um_lat_play_tick, um_lat_expected_tick;
+static volatile uint32_t um_lat_notes, um_lat_completed, um_lat_pending;
+static volatile uint32_t um_lat_queue_us, um_lat_output_us;
+static volatile uint32_t um_lat_queue_max_us, um_lat_output_max_us;
+static volatile uint32_t um_lat_note;
+#endif
+
 static void uart_midi_init(void)                   /* before timer5_start(): PORTH RMW */
 {
     fm1_uart1_midi_init(um_ring, UM_RING);
@@ -60,6 +73,13 @@ static void um_byte(uint32_t b)
         um.got = 0;
         if (midi_enqueue(pkt, 2u)) {
             um.msgs++;
+#if CF_MIDI_LAT_DIAG
+            if ((um.st & 0xF0u) == 0x90u && d2) {
+                uint32_t seq = mi_w, at = (seq - 1u) % MQ;
+                um_lat_tick[at] = fm1_ticks();
+                um_lat_seq[at] = seq;
+            }
+#endif
         } else {
             midi_in_overflow = 1;
             um.drops++;
