@@ -1,57 +1,64 @@
-# Experimental fast MIDI Keys path
+# FM-1 Keys: low-latency MIDI input
 
-**Status: unbuilt, untested on hardware. Do not merge.** This is a test build, not a production release. The change is compile-gated with `CF_MIDI_KEYS_FAST` at the top of `firmware/src/coralflower.c`. Set it to `0` to restore the previous behavior. Existing USB CDC `lat` diagnostics remain enabled.
+**Status:** Hardware-tested optimization; release-candidate source. The previous diagnostic build was confirmed on an M-VAVE FM-1 using a Teenage Engineering EP-133 over TRS MIDI. This cleaned source still needs a fresh build and final smoke test before tagging or merging.
 
-## Why
+## Performance observed on hardware
 
-The pre-change diagnostic (62 isolated EP-133 notes, NOTES IN = FM-1 keys) reported:
+Measurements are from completed UART MIDI Note On packet to audio-engine application or **estimated scheduled DMA output** (not analog onset). Isolated-note test, using the same synth and EP-133 in FM-1 Keys mode.
 
-- MIDI parser completion -> UI simulated key: latest 10.162 ms, max 12.628 ms
-- parser completion -> chord key application: latest 10.939 ms, max 13.427 ms
-- parser completion -> estimated scheduled DMA output: latest 13.838 ms, max 16.327 ms
+| Measurement | Before | Optimized | Change |
+| --- | ---: | ---: | ---: |
+| Note → chord engine | 10.939 ms | 1.124 ms | 89.7% faster |
+| Note → estimated output | 13.838 ms | 3.775 ms | 72.7% lower |
+| Maximum estimated output | 16.327 ms | 5.330 ms | 67.4% lower |
 
-Direct-mode dispatch was much faster. Main-loop/UI rendering cadence was likely causing timing variation.
+The optimized diagnostic run tracked 57 received MIDI notes, 57 fast-path note-ons, and 57 output-threshold matches. These are *not* guaranteed end-to-end MIDI-to-analog-output measurements; the analog DAC and source device's own scheduling were not measured. The performer reported the firmware felt **“way tighter.”**
 
-## What changed
+## Implementation
 
-With NOTES IN = FM-1 keys **and the HOME screen open**, the audio ISR maps the incoming MIDI pitch to the FM-1's 27-key layout and calls the existing chord key engine directly. MIDI-generated key events are still mirrored through the audio-to-UI ring, but are marked as already played to avoid duplicate audio dispatch.
+With **GLO → MIDI → NOTES IN → FM-1 keys** and the **HOME** screen open, incoming MIDI notes use the existing chord engine directly in the audio ISR, instead of waiting for the main-loop/UI queue to send the key back to the audio ISR. UI-held key lights and bookkeeping are still updated asynchronously, tagged to suppress duplicate note-on/note-off dispatch. Incoming velocity retains the existing fixed **GLO → VELOCITY** semantics.
 
-The audio ISR maintains a separate MIDI note -> key index map and per-key reference counts. The UI retains its own displayed virtual-key state; the ISR owns only fast audio-held keys. Physical-key state is published by the UI so overlapping presses do not retrigger; releases check the live physical key scan. Slow-held MIDI keys are also published so a fast release does not silence them.
+The audio-ISR-only fast note-to-key map tracks repeated/octave-folded keys, and key-off handling considers physical keys and slow-path MIDI keys. Mode/channel changes release fast-held keys. EDIT, sequencer and other screens retain the original UI-mediated MIDI behavior. Synth engine, audio buffer, DSP, ARP, glide, FX and chord rules are unchanged.
 
-This deliberately **does not** activate on EDIT, sequencer or other screens. Other modes and screens use the unchanged queue-to-UI behavior. Retrigger semantics, chord construction, synth engines, effects and DMA block size are unchanged.
+The source remains explicitly switchable: `#define CF_MIDI_KEYS_FAST 1` at `firmware/src/coralflower.c`. Changing this to `0` disables the optimized route.
 
-## Build
+The temporary `CF_MIDI_LAT_DIAG` instrumentation and the `lat` console command have been **removed** from the clean release candidate. Earlier timings remain recorded above and in `docs/MIDI-LAT-DIAGNOSTICS.md` (archived research instructions; requires the older diagnostic commit).
 
-On Ubuntu x86-64, after pulling this branch:
+## Validation performed
+
+The user tested rapid sequences, simultaneous physical and MIDI keys, and navigation away from HOME, reporting that **all worked correctly** with the instrumented fast build.
+
+## Release-candidate build and final checks
+
+On Ubuntu x86-64:
 
 ```sh
 git fetch origin
 git switch feature/midi-low-latency
 git pull --ff-only origin feature/midi-low-latency
-./build.sh --release 0.7.1-keysfast1
+./build.sh --release 0.7.1-midi-rc1
 ```
 
-Expected: `build/release-0.7.1-keysfast1/coralflower-0.7.1-keysfast1.fwsc`.
+Expected artifact: `build/release-0.7.1-midi-rc1/coralflower-0.7.1-midi-rc1.fwsc`. Verify package checksums:
 
-Back up settings and use the CoralFlower browser installer, choosing the locally built .fwsc. Keep a known-good previous firmware package for rollback.
+```sh
+cd build/release-0.7.1-midi-rc1
+sha256sum -c SHA256SUMS
+```
 
-## Compare
+Back up settings, keep the previous known-good firmware for recovery, and flash the RC with the CoralFlower browser installer: https://ficusficusov.github.io/CoralFlower/.
 
-1. Keep EP-133 TRS MIDI connected; use FM-1 USB for the CDC console.
-2. Set **GLO > MIDI > NOTES IN > FM-1 keys** and **return to HOME**. No ARP or glide, attack 1 ms, effects off, Classic output.
-3. Connect on Mac: `python3 -m serial.tools.miniterm /dev/cu.usbmodem1103 115200` (substitute enumerated port).
-4. Trigger isolated MIDI notes, then enter `lat`.
-5. Verify `fast_note_ons` increases. `fast_enabled 1` when on HOME; it should be `0` on other screens.
-6. Compare `rx_to_key_apply_us` and `rx_to_dma_us` against the pre-change numbers, after a fresh reboot. In fast mode `rx_to_ui_us` is set to 0 because the UI is intentionally bypassed **for sound dispatch**; the UI still catches up for display.
+Smoke checks after installing the **clean** build:
 
-Then test: different simultaneous MIDI notes mapping to the same physical key; holding MIDI and physical key simultaneously; releasing in each order; chord-button plus root sequences; rapidly repeated short notes; changing NOTEs IN or channel while a note is held; changing from HOME to EDIT with keys held; ARP and sequencer usage. Immediately revert on stuck notes, audible clicks, resets, or display divergence.
+1. HOME + FM-1 Keys: TRS sequence responds promptly; fixed velocity and chord forms unchanged.
+2. Rapid notes/chords, octaves mapping to the same FM-1 key: no stuck or missed notes.
+3. MIDI plus physical key overlap, in each release order: no premature stops or double triggers.
+4. Leaving HOME and returning during MIDI activity: no stuck notes or unexpected edits.
+5. Other input modes (Direct, Roots), ARP and sequencer: original behavior preserved.
+6. Verify firmware boots cleanly and stored settings/sounds survive reboot.
 
-## Limitations
-
-This fast path has not yet been compiled or tested. It may still have concurrency or state-synchronization bugs. Physical key/MIDI overlap and transitions between different screens deserve particular attention.
-
-The `lat` command is still a rough **whole-mix** threshold detector, not a precise waveform onset measurement, and does not measure EP-133 scheduling or the initial MIDI serial bytes.
+**Do not create a release tag or merge until a clean build and hardware smoke test pass.**
 
 ## Rollback
 
-Reflash the previous working diagnostic firmware `0.7.1-latency-keysdiag` or the stock official CoralFlower package. To disable the fast patch at source level, change `#define CF_MIDI_KEYS_FAST 1` to `0` in `firmware/src/coralflower.c` and rebuild.
+Flash the previous known-good firmware. For a source-level rollback, set `CF_MIDI_KEYS_FAST` to `0` and rebuild. The TRS UART polling change in `main.c` is a separate change from the fast Keys path.
