@@ -517,8 +517,23 @@ static void cf_midi_in(void)
             crm_act_t a[2];
             int i, n = crm_map(status, d1, d2, en, ch, a);
             for (i = 0; i < n; i++)
-                if (a[i].kind == CRM_FORWARD)
+                if (a[i].kind == CRM_FORWARD) {
+#if CF_MIDI_LAT_DIAG
+                    if ((status & 0xF0u) == 0x90u && d2 && um_lat_seq[at] == mi_r) {
+                        uint32_t tick = fm1_ticks();
+                        uint32_t us = (uint32_t)(tick - um_lat_tick[at]) / FM1_TICKS_PER_US;
+                        um_lat_rx_tick = um_lat_tick[at];
+                        um_lat_dispatch_tick = tick;
+                        um_lat_queue_us = us;
+                        if (us > um_lat_queue_max_us)
+                            um_lat_queue_max_us = us;
+                        um_lat_note = d1;
+                        um_lat_notes++;
+                        um_lat_pending = 1u;
+                    }
+#endif
                     midi_event(status & 0xF0u, a[i].part, d1, d2);
+                }
         }
     }
 }
