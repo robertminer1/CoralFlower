@@ -93,41 +93,6 @@ static void audio_block(int32_t *out, uint32_t n)       /* mix (fx.c), then Q15 
 {
     uint32_t i;
     mix_block(out, n);
-#if CF_MIDI_LAT_DIAG
-    /* Diagnostic only: first output sample above -42 dBFS after a TRS Note
-     * On in Direct mode. Best measured with one isolated, dry note and no
-     * existing tails. This estimates the DMA playback time, not the analog
-     * DAC's precise transition, and cannot isolate a note within a mix. */
-    if (um_lat_pending) {
-        for (i = 0; i < n; i++) {
-            int32_t l = out[2u * i], r = out[2u * i + 1u];
-            if (l > 256 || l < -256 || r > 256 || r < -256) {
-                uint32_t tick = um_lat_expected_tick + i * DAC_TICKS;
-                uint32_t us = (uint32_t)(tick - um_lat_rx_tick) / FM1_TICKS_PER_US;
-                um_lat_play_tick = tick;
-                um_lat_output_us = us;
-                if (us > um_lat_output_max_us)
-                    um_lat_output_max_us = us;
-                um_lat_completed++;
-                um_lat_pending = 0;
-                if (um_lat_key_stage == 3u)
-                    um_lat_key_stage = 0u;
-                break;
-            }
-        }
-        if (um_lat_pending &&
-            (uint32_t)(fm1_ticks() - um_lat_dispatch_tick) > 200000u * FM1_TICKS_PER_US) {
-            um_lat_pending = 0; /* silent preset / muted track */
-            um_lat_key_stage = 0u;
-        }
-    }
-    /* Also expire a Keys-mode note which never reached the UI or audio
-     * event queue, e.g. a held/duplicate key, an edit shortcut, or dropped
-     * queue entry. Do not mistake its next note for the previous one. */
-    if (um_lat_key_stage && !um_lat_pending &&
-        (uint32_t)(fm1_ticks() - um_lat_rx_tick) > 200000u * FM1_TICKS_PER_US)
-        um_lat_key_stage = 0u;
-#endif
     if (fx_usb_fixed)                                   /* Options > USB Level = Fixed: USB took the full level, the */
         usb_fixed_dac(out, n);                          /* DAC (speaker, headphones) gets MASTER's (fx.c) */
 #if FELUCCA_UAC
@@ -269,9 +234,6 @@ void fm1_alnk0_irq(void)                       /* via isr_alnk0 (hal/fm1_isr.S) 
 #endif
 #ifdef FM1_INPUT_LAT
             kb_out_tick = t0 + (HALF_FRAMES + b) * DAC_TICKS;   /* when this block plays (seq.c kb_lat) */
-#endif
-#if CF_MIDI_LAT_DIAG
-            um_lat_expected_tick = t0 + (HALF_FRAMES + b) * DAC_TICKS;
 #endif
             audio_block(o + 2u * b, CTL);
         }
