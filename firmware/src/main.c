@@ -104,6 +104,17 @@ void fm1_timer5_irq(void)
     }
 #endif
     if (felucca_dbg.in_audio) {
+        /* TRS MIDI uses the UART RX DMA ring, not USB's SIE. Drain it even
+         * during an audio render: otherwise a complete note waits until the
+         * entire 128-frame half has finished before entering midi_in_q.
+         * TIMER5 is the only UART-ring consumer, including when it nests
+         * inside the audio ISR. Do not run usb_poll here (SIE ownership). */
+#if FELUCCA_UART
+        if (owed & 2u) {
+            uart_midi_poll();
+            owed &= ~2u;
+        }
+#endif
         felucca_dbg.nested++;
         t5_nested_ticks += fm1_ticks() - t0;
         return;
