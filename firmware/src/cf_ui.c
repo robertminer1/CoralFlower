@@ -1292,9 +1292,16 @@ static void ui_note_key_aged(int key, int down, int age_ms)   /* age_ms: -1 the 
 /* an outside keyboard's notes (NOTES IN FM-1 keys or Roots; cf_out.c cf_xq): FM-1 keys folds each note by octaves
  * into F3..G5 and presses that key (the FM-1's own key down too: nothing more); Roots sends it as a root at its
  * pitch, but on the SEQUENCER's DRUMS row, where the keys are drum pads, as a key. A note goes up the way it went down */
+#if CF_MIDI_KEYS_FAST
+static uint8_t cf_ui_fast_note[128]; /* UI-only mirror, never read by audio ISR */
+#endif
 static void cf_xnote_up(uint32_t n)              /* outside note n let go: its root, or the FM-1 key it pressed */
 {
     uint32_t v = cu.xnote[n & 127u], k;
+#if CF_MIDI_KEYS_FAST
+    uint32_t was_fast = cf_ui_fast_note[n & 127u];
+    cf_ui_fast_note[n & 127u] = 0;
+#endif
     cu.xnote[n & 127u] = 0;
     if (v == 0xFFu) {
         if (cu.xroots)
@@ -1304,7 +1311,11 @@ static void cf_xnote_up(uint32_t n)              /* outside note n let go: its r
         k = v - 1u;
         if (cu.xcnt[k] && --cu.xcnt[k] == 0u) {
             cu.xkeys &= ~(1u << k);
-            if (!((cu.pkeys >> k) & 1u))
+            if (!((cu.pkeys >> k) & 1u)
+#if CF_MIDI_KEYS_FAST
+                && !was_fast && !((cf_fast_mask >> k) & 1u)
+#endif
+                )
                 ui_note_key((int)k, 0);
         }
     }
@@ -1323,6 +1334,9 @@ static void cf_xq_drain(void)
     uint32_t w = cf_xq_w;
     while (cf_xq_r != w) {
         uint32_t e = cf_xq[cf_xq_r % CF_XQ], n = e & 0x7Fu, down = (e >> 7) & 1u, k;
+#if CF_MIDI_KEYS_FAST
+        uint32_t was_fast = (e >> 8) & 1u;
+#endif
         uint32_t age = fm1_ms - cf_xq_ms[cf_xq_r % CF_XQ];
         cf_xq_r++;
         cu.idle_ms = 0;
@@ -1341,10 +1355,17 @@ static void cf_xq_drain(void)
                 k -= 12u;
             k -= 53u;
             cu.xnote[n] = (uint8_t)(k + 1u);
+#if CF_MIDI_KEYS_FAST
+            cf_ui_fast_note[n] = (uint8_t)was_fast;
+#endif
             if (cu.xcnt[k]++ == 0u) {
                 cu.xkeys |= 1u << k;
-                if (!((cu.pkeys >> k) & 1u))
-                    ui_note_key_aged((int)k, 1, age <= 250u ? (int)age : 0);
+                if (!((cu.pkeys >> k) & 1u)) {
+#if CF_MIDI_KEYS_FAST
+                    if (!was_fast && !((cf_fast_mask >> k) & 1u))
+#endif
+                        ui_note_key_aged((int)k, 1, age <= 250u ? (int)age : 0);
+                }
             }
         } else {
             cf_xnote_up(n);
@@ -1359,9 +1380,23 @@ static void cf_ui_pump(void)
      * tap on a chord button went that way, and the roots played single notes (the owner, 2026-10-21: "после включения
      * если выбрать тип аккорда и начать играть, то сначала играются по одной ноте") */
     uint32_t now = fm1_in.notes, tap = fm1_input_note_edges() & ~now & ~cu.pkeys & ((1u << CF_NKEYS) - 1u);
-    uint32_t ch = ((now ^ cu.pkeys) | tap) & ~cu.xkeys, k, pass;   /* (a key held from outside too: no change) */
-    if (!cu.booted)
+    uint32_t ch = ((now ^ cu.pkeys) | tap) & ~cu.xkeys
+#if CF_MIDI_KEYS_FAST
+                  & ~cf_fast_mask
+#endif
+                  , k, pass;   /* (a key held from outside too: no change) */
+    if (!cu.booted) {
+#if CF_MIDI_KEYS_FAST
+        cf_fast_keys_allowed = 0;
+#endif
         return;
+    }
+#if CF_MIDI_KEYS_FAST
+    /* Disallow fast handling off HOME, leaving editing/step/drum shortcuts
+     * unchanged. Re-enable only with no slow-path MIDI virtual keys held. */
+    if (cu.scr != SCR_HOME)
+        cf_fast_keys_allowed = 0;
+#endif
     if (ch) {
         for (pass = 0; pass < 3u; pass++)
             for (k = 0; k < CF_NKEYS; k++)
@@ -1377,8 +1412,22 @@ static void cf_ui_pump(void)
         cu.idle_ms = 0;
     }
     cu.pkeys = now;
+#if CF_MIDI_KEYS_FAST
+    cf_fast_physical_keys = now;
+#endif
     cf_xq_drain();
     cu.keys = cu.pkeys | cu.xkeys;
+#if CF_MIDI_KEYS_FAST
+    {
+        uint32_t n, slow_mask = 0u;
+        for (n = 0; n < 128u; n++)
+            if (cu.xnote[n] && !cf_ui_fast_note[n] && cu.xnote[n] != 0xFFu)
+                slow_mask |= 1u << (cu.xnote[n] - 1u);
+        cf_fast_slow_keys = slow_mask;
+        cf_fast_keys_allowed = (uint8_t)(cu.scr == SCR_HOME && !slow_mask &&
+                                         cf_xq_w == cf_xq_r && cs.notes_in == CF_NI_KEYS);
+    }
+#endif
 }
 
 static void cf_ui_input(void)

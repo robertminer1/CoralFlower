@@ -19,6 +19,7 @@ static struct {
     uint8_t st, need, got, d0, sysex;
 } um;
 
+
 static void uart_midi_init(void)                   /* before timer5_start(): PORTH RMW */
 {
     fm1_uart1_midi_init(um_ring, UM_RING);

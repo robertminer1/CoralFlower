@@ -447,21 +447,93 @@ static void cf_click_mix(int32_t *out, uint32_t n)
  * roots: cf_ui.c cf_ui_pump). One producer (the audio ISR), one consumer (the main loop); a full queue drops a note-on
  * (its note-off then finds nothing down) */
 #define CF_XQ 64u                                /* a power of two */
-static uint16_t cf_xq[CF_XQ];                    /* note | down << 7 */
+static uint16_t cf_xq[CF_XQ];                    /* note | down << 7 | fast << 8 */
 static uint32_t cf_xq_ms[CF_XQ];                 /* when it came (fm1_ms) */
 static volatile uint32_t cf_xq_w, cf_xq_r;
-static void cf_xq_put(uint32_t note, uint32_t down, uint32_t ms)
+#if CF_MIDI_KEYS_FAST
+/* ISR-owned MIDI virtual-key map. UI owns key lights/menus, but does not post
+ * an audio key event a second time for entries marked fast in cf_xq.
+ * Enable only on HOME with no previously queued slow virtual keys. */
+static volatile uint8_t cf_fast_keys_allowed;
+static uint8_t cf_fast_note[128];
+static uint8_t cf_fast_count[27];
+static volatile uint32_t cf_fast_mask;
+static volatile uint32_t cf_fast_physical_keys; /* UI's last applied physical-key mask */
+static volatile uint32_t cf_fast_slow_keys;     /* UI's non-fast MIDI-held key mask */
+#endif
+static int cf_xq_put(uint32_t note, uint32_t down, uint32_t ms, uint32_t fast)
 {
     uint32_t w = cf_xq_w;
     if (w - cf_xq_r >= CF_XQ && down)
-        return;
+        return 0;
     if (w - cf_xq_r >= CF_XQ)
         cf_xq_r++;                               /* (a note-off never lost: the oldest goes) */
-    cf_xq[w % CF_XQ] = (uint16_t)(note | (down ? 0x80u : 0u));
+    cf_xq[w % CF_XQ] = (uint16_t)(note | (down ? 0x80u : 0u) | (fast ? 0x100u : 0u));
     cf_xq_ms[w % CF_XQ] = ms;
     RING_PUBLISH();
     cf_xq_w = w + 1u;
+    return 1;
 }
+
+#if CF_MIDI_KEYS_FAST
+static uint32_t cf_fast_key_index(uint32_t note)
+{
+    uint32_t k;
+    for (k = note; k < 53u; k += 12u)
+        ;
+    while (k > 79u)
+        k -= 12u;
+    return k - 53u;
+}
+/* Only audio ISR calls this. No main-loop state is modified here. */
+static uint8_t cf_fast_input_ch;
+static void cf_fast_release_all(void)
+{
+    uint32_t n;
+    /* A mode/channel change can invalidate outstanding note-offs. Release
+     * the fast virtual keys on the audio ISR side, without touching UI data. */
+    if (!cf_fast_mask)
+        return;
+    for (n = 0; n < 128u; n++)
+        if (cf_fast_note[n]) {
+            uint32_t k = cf_fast_note[n] - 1u;
+            cf_fast_note[n] = 0;
+            if (cf_fast_count[k] && --cf_fast_count[k] == 0u) {
+                cf_fast_mask &= ~(1u << k);
+                if (!((fm1_in.notes | cf_fast_slow_keys) & (1u << k)))
+                    cfp_key((int)k, 0);
+            }
+        }
+}
+static void cf_fast_key_event(uint32_t note, int down)
+{
+    uint32_t k, mask;
+    if (down) {
+        k = cf_fast_key_index(note);
+        cf_fast_note[note] = (uint8_t)(k + 1u);
+        if (cf_fast_count[k]++ != 0u)
+            return;
+        mask = 1u << k;
+        cf_fast_mask |= mask;
+        /* If the physical key has already been processed, do not retrigger.
+         * The fast mask prevents the UI from posting a duplicate later. */
+        if (!(cf_fast_physical_keys & mask))
+            cfp_key((int)k, 1);
+    } else {
+        uint32_t v = cf_fast_note[note];
+        if (!v)
+            return;
+        k = v - 1u;
+        cf_fast_note[note] = 0;
+        if (cf_fast_count[k] && --cf_fast_count[k] == 0u) {
+            mask = 1u << k;
+            cf_fast_mask &= ~mask;
+            if (!((fm1_in.notes | cf_fast_slow_keys) & mask))
+                cfp_key((int)k, 0);
+        }
+    }
+}
+#endif
 
 /* usb.c's midi_in_q (USB and TRS) is drained here: notes on the chord / bass channels play the parts directly
  * (cr_midi.c crm_map, ChoralRoot's), with the pedal, bend and controllers (midi_event above) */
@@ -481,8 +553,18 @@ static void cf_midi_in(void)
                 cr_mrelease(p, n);
     }
     cfx_direct = cfp_cfg.notes_in == CF_NI_DIRECT;
-    if (midi_in_overflow)
+#if CF_MIDI_KEYS_FAST
+    if (cfp_cfg.notes_in != CF_NI_KEYS || cf_fast_input_ch != cfp_cfg.in_ch) {
+        cf_fast_release_all();
+        cf_fast_input_ch = cfp_cfg.in_ch;
+    }
+#endif
+    if (midi_in_overflow) {
+#if CF_MIDI_KEYS_FAST
+        cf_fast_release_all();
+#endif
         return;
+    }
     while (mi_r != w) {
         uint32_t at = mi_r % MQ, pkt = midi_in_q[at], status = (pkt >> 8) & 0xFFu;
         uint32_t d1 = (pkt >> 16) & 0x7Fu, d2 = (pkt >> 24) & 0x7Fu;
@@ -509,16 +591,41 @@ static void cf_midi_in(void)
         if (cfp_cfg.notes_in != CF_NI_DIRECT && (status & 0xE0u) == 0x80u) {   /* a note on or off: IN CH's, or any
                                                   * channel with IN CH All (0.5.1, GitHub #2: a Digitakt's other tracks
                                                   * played chords) */
-            if (!cfp_cfg.in_ch || (status & 0x0Fu) == cfp_cfg.in_ch - 1u)
-                cf_xq_put(d1, (status & 0xF0u) == 0x90u && d2, midi_in_ms[at]);
+            if (!cfp_cfg.in_ch || (status & 0x0Fu) == cfp_cfg.in_ch - 1u) {
+                int down = (status & 0xF0u) == 0x90u && d2;
+                int fast = 0;
+#if CF_MIDI_KEYS_FAST
+                if (cfp_cfg.notes_in == CF_NI_KEYS) {
+                    if (!down && cf_fast_note[d1])
+                        fast = 1;
+                    else if (down && !cf_fast_note[d1] && cf_fast_keys_allowed)
+                        fast = 1;
+                }
+#endif
+                if (!cf_xq_put(d1, down, midi_in_ms[at], (uint32_t)fast))
+                    continue;
+#if CF_MIDI_KEYS_FAST
+                if (fast) {
+                    if (down && !cf_fast_note[d1]) {
+                        uint32_t age = fm1_ms - midi_in_ms[at];
+                        sqp.rage = age <= 250u ? age : 0u;
+                        sqp_pre.key_ms = cf_now_ms - sqp.rage;
+                        cf_fast_key_event(d1, 1);
+                    }
+                    else if (!down)
+                        cf_fast_key_event(d1, 0);
+                }
+#endif
+            }
             continue;
         }
         if (status >= 0x80u && status < 0xF0u) {
             crm_act_t a[2];
             int i, n = crm_map(status, d1, d2, en, ch, a);
             for (i = 0; i < n; i++)
-                if (a[i].kind == CRM_FORWARD)
+                if (a[i].kind == CRM_FORWARD) {
                     midi_event(status & 0xF0u, a[i].part, d1, d2);
+                }
         }
     }
 }

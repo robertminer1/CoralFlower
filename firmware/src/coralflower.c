@@ -92,6 +92,7 @@ static void cf_boot_note(void);            /* (cf_fx.c) */
 #endif
 
 #define CF_UNIT 1                /* (main.c: CoralFlower's calibration and update hooks) */
+#define CF_MIDI_KEYS_FAST 1 /* HOME-only low-latency MIDI key dispatch; 0 restores original path */
 
 #if defined(__APPLE__)            /* the host syntax check only: Mach-O has no ELF sections (.noinit, .pool) */
 #define __attribute__(x)
